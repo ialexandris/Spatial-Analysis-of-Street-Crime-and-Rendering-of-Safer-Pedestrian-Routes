@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shortest Path App (Camden)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body { margin:0; font-family: Arial, sans-serif; }
+    header { display:flex; gap:8px; align-items:center; padding:10px 12px; background:#222; color:#fff; }
+    header .title { font-weight:700; flex:1; }
+    header button { border:0; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600; }
+    button#clear { background:#e53935; color:#fff; }
+    #map { height: calc(100vh - 96px); }
+    .app-title { background:#1565c0; color:#fff; font-size:20px; font-weight:700; text-align:center; padding:10px; }
+    .legend { background:#fff; padding:8px 10px; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,.2); font-size:13px; }
+    .legend .row { display:flex; align-items:center; gap:8px; margin:4px 0; }
+    .chip { width:18px; height:6px; border-radius:4px; display:inline-block; box-shadow:0 0 0 1px rgba(0,0,0,.2) inset; }
+    .info-box { position: fixed; bottom: 10px; left: 10px; background:#fff; padding:10px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.3); font-size:13px; max-width:240px; display:flex; gap:8px; align-items:flex-start; z-index: 1000; }
+    .info-box img { width:60px; height:60px; object-fit:contain; border-radius:6px; flex-shrink:0; background:#f5f5f5; }
+  </style>
+</head>
+<body>
+  <div class="app-title">Διαδικτυακή εφαρμογή για εύρεση ασφαλέστερης διαδρομής στο Camden (UK)</div>
+
+  <header>
+    <div class="title">Κάνε 2 κλικ στον χάρτη (Αφετηρία → Προορισμός). Επανάλαβε για όσες διαδρομές θέλεις.</div>
+    <button id="clear">Καθάρισμα όλων</button>
+  </header>
+
+  <div id="map"></div>
+
+  <div class="info-box">
+    <img src="/static/Ntua.png" alt="ΕΜΠ" onerror="this.onerror=null; this.src='Ntua.png';" />
+    <div>
+      <strong>ΔΠΜΣ «Γεωπληροφορική - ΣΑΤΜ, ΕΜΠ </strong><br/>
+        Έγινε στα πλαίσια μεταπτυχιακής εργασίας<br/>
+        από τον Ισίδωρο Αλεξανδρή<br/>
+        Email: <a href="mailto:isidalexand@gmail.com">isidalexand@gmail.com
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // --- Χάρτης
+    const map = L.map('map').setView([51.544, -0.175], 14); // Camden περίπου
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, attribution: '&copy; OpenStreetMap' }).addTo(map);
+
+    // --- Οδικό δίκτυο (από το ίδιο backend, φτιαγμένο σε 4326)
+    fetch('/static/roads2.geojson')
+      .then(r => r.json())
+      .then(data => {
+        const roadsLayer = L.geoJSON(data, { style: { color: 'gray', weight: 2 } }).addTo(map);
+        const b = roadsLayer.getBounds();
+        if (b.isValid()) map.fitBounds(b);
+      });
+
+    // --- Layer για όλες τις διαδρομές
+    const routesLayer = L.featureGroup().addTo(map);
+
+    // --- Χρωματική παλέτα
+    const palette = ['#1e88e5','#d81b60','#43a047','#f4511e','#8e24aa','#3949ab','#00897b','#fb8c00','#6d4c41','#7cb342'];
+    let routeCount = 0;
+    const nextColor = () => palette[routeCount++ % palette.length];
+
+    // --- Επιλογή σημείων
+    let points = [];
+    let tmpMarkers = [];
+    let isRouting = false;
+
+    // Υπόμνημα
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function () {
+      const div = L.DomUtil.create('div', 'legend');
+      div.id = 'legend-box';
+      div.innerHTML = "<div class='row'><strong>Υπόμνημα</strong></div>";
+      return div;
+    };
+    legend.addTo(map);
+
+    function addLegendRow(color, label){
+      const box = document.getElementById('legend-box');
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<span class="chip" style="background:${color}"></span> ${label}`;
+      box.appendChild(row);
+    }
+
+    const toAPI = (latlng) => ({ lng: latlng.lng, lat: latlng.lat });
+    const toLeaflet = (coords) => coords.map(([lng,lat]) => [lat, lng]);
+
+    function addRoute(data, color) {
+      if (data.start_connection?.length > 1) {
+        L.polyline(toLeaflet(data.start_connection), { color, weight:3, opacity:.6, dashArray:'5, 10' }).addTo(routesLayer);
+      }
+      const routeCoords = Array.isArray(data.route_coords) ? toLeaflet(data.route_coords) : [];
+      if (routeCoords.length > 1) {
+        L.polyline(routeCoords, { color, weight:5, opacity:.95 }).addTo(routesLayer);
+      }
+      if (Array.isArray(data.mid_connections)) {
+        data.mid_connections.forEach(seg => {
+          if (seg?.length > 1) {
+            L.polyline(toLeaflet(seg), { color, weight:3, opacity:.6, dashArray:'5, 10' }).addTo(routesLayer);
+          }
+        });
+      }
+      if (data.end_connection?.length > 1) {
+        L.polyline(toLeaflet(data.end_connection), { color, weight:3, opacity:.6, dashArray:'5, 10' }).addTo(routesLayer);
+      }
+
+      if (routeCoords.length > 1) {
+        L.circleMarker(routeCoords[0], { radius:5, color, fillColor:color, fillOpacity:1 }).addTo(routesLayer);
+        L.circleMarker(routeCoords[routeCoords.length-1], { radius:5, color, fillColor:'#fff', fillOpacity:1 }).addTo(routesLayer);
+      }
+
+      const b = routesLayer.getBounds();
+      if (b.isValid()) map.fitBounds(b, { padding:[20,20] });
+      addLegendRow(color, `Διαδρομή #${routeCount} (${data.length_m}m)`);
+    }
+
+    async function requestRoute(startLL, endLL, color) {
+      try {
+        const res = await fetch('/route', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start: toAPI(startLL), end: toAPI(endLL) })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Σφάλμα διαδρομής');
+        addRoute(data, color);
+        tmpMarkers.forEach(mm => map.removeLayer(mm));
+        tmpMarkers = []; points = [];
+      } catch (err) {
+        alert('Αποτυχία: ' + err.message);
+      } finally {
+        isRouting = false;
+      }
+    }
+
+    map.on('click', (e) => {
+      if (isRouting) return;
+      points.push(e.latlng);
+      const m = L.marker(e.latlng).addTo(map);
+      tmpMarkers.push(m);
+      if (points.length === 2) {
+        isRouting = true;
+        const color = nextColor();
+        requestRoute(points[0], points[1], color);
+      }
+    });
+
+    document.getElementById('clear').onclick = () => {
+      routesLayer.clearLayers();
+      document.getElementById('legend-box').innerHTML = "<div class='row'><strong>Υπόμνημα</strong></div>";
+      routeCount = 0;
+      tmpMarkers.forEach(mm => map.removeLayer(mm));
+      tmpMarkers = []; points = []; isRouting = false;
+    };
+  </script>
+</body>
+</html>
